@@ -31,10 +31,11 @@ export default function Game() {
   const [scores, setScores] = useState({ rouge: 0, bleu: 0 });
   const [personalClicks, setPersonalClicks] = useState(0);
   const [deviceId, setDeviceId] = useState<string | null>(null);
+  const [userPseudo, setUserPseudo] = useState<string | null>(null);
 
-  // Générer ou récupérer l'ID unique de l'appareil
+  // Générer ou récupérer l'ID unique de l'appareil et le pseudo
   useEffect(() => {
-    const initDeviceId = async () => {
+    const initUserData = async () => {
       try {
         let storedId = await AsyncStorage.getItem("deviceId");
         if (!storedId) {
@@ -44,14 +45,19 @@ export default function Game() {
           await AsyncStorage.setItem("deviceId", storedId);
         }
         setDeviceId(storedId);
+
+        const pseudo = await AsyncStorage.getItem("userPseudo");
+        if (pseudo) {
+          setUserPseudo(pseudo);
+        }
       } catch (error) {
         console.error(
-          "Erreur lors de l'initialisation de l'ID de l'appareil:",
+          "Erreur lors de l'initialisation des données utilisateur:",
           error
         );
       }
     };
-    initDeviceId();
+    initUserData();
   }, []);
 
   // Charger le nombre de clics personnel depuis Firebase
@@ -71,7 +77,7 @@ export default function Game() {
   }, [deviceId]);
 
   const handleClick = useCallback(async () => {
-    if (!userTeam || !deviceId) return;
+    if (!userTeam || !deviceId || !userPseudo) return;
 
     try {
       // Créer un ID unique pour la combinaison joueur-équipe
@@ -88,6 +94,7 @@ export default function Game() {
           clicks: 1,
           lastUpdate: Date.now(),
           deviceId: deviceId,
+          pseudo: userPseudo,
         });
       } else {
         // Mettre à jour le nombre de clics pour cette combinaison
@@ -99,7 +106,7 @@ export default function Game() {
     } catch (error) {
       console.error("Erreur lors de l'enregistrement de l'interaction:", error);
     }
-  }, [userTeam, deviceId]);
+  }, [userTeam, deviceId, userPseudo]);
 
   const handleReset = async () => {
     try {

@@ -12,43 +12,50 @@ import { LinearGradient } from "expo-linear-gradient";
 
 const { width } = Dimensions.get("window");
 
-export default function TeamSelect() {
+export default function Home() {
   const router = useRouter();
-  const [loading, setLoading] = useState(true);
+  const [selectedTeam, setSelectedTeam] = useState<"rouge" | "bleu" | null>(
+    null
+  );
 
   useEffect(() => {
-    checkTeam();
+    const checkPseudoAndTeam = async () => {
+      const pseudo = await AsyncStorage.getItem("userPseudo");
+      const team = await AsyncStorage.getItem("selectedTeam");
+
+      if (!pseudo) {
+        router.replace("/pseudo");
+        return;
+      }
+
+      if (team === "rouge" || team === "bleu") {
+        router.replace("/game");
+        return;
+      }
+    };
+
+    checkPseudoAndTeam();
   }, []);
 
-  const checkTeam = async () => {
-    try {
-      const team = await AsyncStorage.getItem("selectedTeam");
-      if (team) {
-        router.replace("/game");
-      }
-      setLoading(false);
-    } catch (error) {
-      console.error("Erreur lors de la vérification de l'équipe:", error);
-      setLoading(false);
-    }
-  };
-
-  const selectTeam = async (team: "rouge" | "bleu") => {
+  const handleTeamSelect = async (team: "rouge" | "bleu") => {
     try {
       await AsyncStorage.setItem("selectedTeam", team);
-      router.replace("/game");
+      setSelectedTeam(team);
+      router.push("/game");
     } catch (error) {
       console.error("Erreur lors de la sélection de l'équipe:", error);
     }
   };
 
-  if (loading) {
-    return (
-      <View style={styles.container}>
-        <Text style={styles.text}>Chargement...</Text>
-      </View>
-    );
-  }
+  const handleReset = async () => {
+    try {
+      await AsyncStorage.removeItem("selectedTeam");
+      await AsyncStorage.removeItem("userPseudo");
+      router.replace("/pseudo");
+    } catch (error) {
+      console.error("Erreur lors de la réinitialisation:", error);
+    }
+  };
 
   return (
     <View style={styles.container}>
@@ -88,7 +95,7 @@ export default function TeamSelect() {
             />
             <TouchableOpacity
               style={styles.touchable}
-              onPress={() => selectTeam("rouge")}
+              onPress={() => handleTeamSelect("rouge")}
             >
               <View style={[styles.teamButton, styles.redButton]}>
                 <Text style={[styles.buttonText, { color: "#ff4444" }]}>
@@ -107,7 +114,7 @@ export default function TeamSelect() {
             />
             <TouchableOpacity
               style={styles.touchable}
-              onPress={() => selectTeam("bleu")}
+              onPress={() => handleTeamSelect("bleu")}
             >
               <View style={[styles.teamButton, styles.blueButton]}>
                 <Text style={[styles.buttonText, { color: "#4444ff" }]}>
@@ -222,12 +229,6 @@ const styles = StyleSheet.create({
     textAlign: "center",
     letterSpacing: 3,
   },
-  subText: {
-    fontSize: 12,
-    color: "#666666",
-    textAlign: "center",
-    fontFamily: "SpaceMono",
-  },
   bottomDecoration: {
     alignItems: "center",
     marginTop: 40,
@@ -235,9 +236,5 @@ const styles = StyleSheet.create({
   bottomLine: {
     height: 1,
     width: width * 0.9,
-  },
-  text: {
-    fontSize: 18,
-    color: "white",
   },
 });
