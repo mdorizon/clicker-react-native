@@ -9,10 +9,15 @@ import {
 import { useEffect, useState, useCallback } from "react";
 import {
   collection,
-  addDoc,
+  doc,
+  setDoc,
   onSnapshot,
   query,
   where,
+  getDoc,
+  updateDoc,
+  increment,
+  addDoc,
 } from "firebase/firestore";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { LinearGradient } from "expo-linear-gradient";
@@ -51,30 +56,46 @@ export default function Game() {
 
   // Charger le nombre de clics personnel depuis Firebase
   useEffect(() => {
-    if (!deviceId || !userTeam) return;
+    if (!deviceId) return;
 
     const interactionsRef = collection(db, "interactions");
     const q = query(interactionsRef, where("deviceId", "==", deviceId));
-
     const unsubscribe = onSnapshot(q, (snapshot) => {
-      const clickCount = snapshot.docs.length;
-      setPersonalClicks(clickCount);
+      const totalClicks = snapshot.docs.reduce((total, doc) => {
+        return total + (doc.data().clicks || 0);
+      }, 0);
+      setPersonalClicks(totalClicks);
     });
 
     return () => unsubscribe();
-  }, [deviceId, userTeam]);
+  }, [deviceId]);
 
   const handleClick = useCallback(async () => {
     if (!userTeam || !deviceId) return;
 
     try {
-      // Ajouter le clic à Firebase avec l'ID de l'appareil
-      const interactionsRef = collection(db, "interactions");
-      await addDoc(interactionsRef, {
-        team: userTeam === "rouge" ? "red" : "blue",
-        timestamp: Date.now(),
-        deviceId: deviceId,
-      });
+      // Créer un ID unique pour la combinaison joueur-équipe
+      const playerTeamId = `${deviceId}_${
+        userTeam === "rouge" ? "red" : "blue"
+      }`;
+      const playerRef = doc(db, "interactions", playerTeamId);
+      const playerDoc = await getDoc(playerRef);
+
+      if (!playerDoc.exists()) {
+        // Créer un nouveau document pour cette combinaison joueur-équipe
+        await setDoc(playerRef, {
+          team: userTeam === "rouge" ? "red" : "blue",
+          clicks: 1,
+          lastUpdate: Date.now(),
+          deviceId: deviceId,
+        });
+      } else {
+        // Mettre à jour le nombre de clics pour cette combinaison
+        await updateDoc(playerRef, {
+          clicks: increment(1),
+          lastUpdate: Date.now(),
+        });
+      }
     } catch (error) {
       console.error("Erreur lors de l'enregistrement de l'interaction:", error);
     }
@@ -111,13 +132,17 @@ export default function Game() {
     const unsubscribe = onSnapshot(
       interactionsRef,
       (snapshot) => {
-        // Compter les interactions par équipe
-        const redClicks = snapshot.docs.filter(
-          (doc) => doc.data().team === "red"
-        ).length;
-        const blueClicks = snapshot.docs.filter(
-          (doc) => doc.data().team === "blue"
-        ).length;
+        // Compter les clics par équipe
+        const redClicks = snapshot.docs.reduce((total, doc) => {
+          return (
+            total + (doc.data().team === "red" ? doc.data().clicks || 0 : 0)
+          );
+        }, 0);
+        const blueClicks = snapshot.docs.reduce((total, doc) => {
+          return (
+            total + (doc.data().team === "blue" ? doc.data().clicks || 0 : 0)
+          );
+        }, 0);
 
         setScores({
           rouge: redClicks,
