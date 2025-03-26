@@ -32,6 +32,19 @@ export default function Game() {
   const [personalClicks, setPersonalClicks] = useState(0);
   const [deviceId, setDeviceId] = useState<string | null>(null);
   const [userPseudo, setUserPseudo] = useState<string | null>(null);
+  const [activePlayers, setActivePlayers] = useState<
+    Array<{
+      pseudo: string;
+      streak: number;
+      team: string;
+      opacity: number;
+      lastClickTime: number;
+    }>
+  >([
+    { pseudo: "", streak: 0, team: "red", opacity: 0, lastClickTime: 0 },
+    { pseudo: "", streak: 0, team: "red", opacity: 0, lastClickTime: 0 },
+    { pseudo: "", streak: 0, team: "red", opacity: 0, lastClickTime: 0 },
+  ]);
 
   // Générer ou récupérer l'ID unique de l'appareil et le pseudo
   useEffect(() => {
@@ -80,7 +93,6 @@ export default function Game() {
     if (!userTeam || !deviceId || !userPseudo) return;
 
     try {
-      // Créer un ID unique pour la combinaison joueur-équipe
       const playerTeamId = `${deviceId}_${
         userTeam === "rouge" ? "red" : "blue"
       }`;
@@ -88,19 +100,28 @@ export default function Game() {
       const playerDoc = await getDoc(playerRef);
 
       if (!playerDoc.exists()) {
-        // Créer un nouveau document pour cette combinaison joueur-équipe
         await setDoc(playerRef, {
           team: userTeam === "rouge" ? "red" : "blue",
           clicks: 1,
           lastUpdate: Date.now(),
           deviceId: deviceId,
           pseudo: userPseudo,
+          streak: 1,
+          lastClickTime: Date.now(),
         });
       } else {
-        // Mettre à jour le nombre de clics pour cette combinaison
+        const lastClickTime = playerDoc.data().lastClickTime || 0;
+        const timeSinceLastClick = Date.now() - lastClickTime;
+
+        // Réinitialiser le streak si plus de 3 secondes se sont écoulées
+        const newStreak =
+          timeSinceLastClick > 3000 ? 1 : (playerDoc.data().streak || 0) + 1;
+
         await updateDoc(playerRef, {
           clicks: increment(1),
           lastUpdate: Date.now(),
+          streak: newStreak,
+          lastClickTime: Date.now(),
         });
       }
     } catch (error) {
@@ -162,6 +183,112 @@ export default function Game() {
     );
 
     return () => unsubscribe();
+  }, []);
+
+  // Écouter les joueurs actifs
+  useEffect(() => {
+    const interactionsRef = collection(db, "interactions");
+    const unsubscribe = onSnapshot(interactionsRef, (snapshot) => {
+      const now = Date.now();
+      const activePlayersList = snapshot.docs
+        .map((doc) => {
+          const data = doc.data();
+          const lastClickTime = data.lastClickTime || 0;
+          const timeSinceLastClick = now - lastClickTime;
+          return {
+            pseudo: data.pseudo || "",
+            streak: data.streak || 0,
+            team: data.team || "red",
+            lastClickTime: lastClickTime,
+            opacity: timeSinceLastClick > 3000 ? 0 : 1,
+          };
+        })
+        .filter((player) => {
+          const timeSinceLastClick = now - player.lastClickTime;
+          return player.streak > 0 && timeSinceLastClick <= 3000;
+        })
+        .sort((a, b) => {
+          if (b.streak !== a.streak) {
+            return b.streak - a.streak;
+          }
+          return a.lastClickTime - b.lastClickTime;
+        })
+        .slice(0, 3);
+
+      // Créer une copie de la liste actuelle
+      const currentPlayers = [...activePlayers];
+
+      // Mettre à jour uniquement les joueurs qui ont changé
+      activePlayersList.forEach((player) => {
+        const existingIndex = currentPlayers.findIndex(
+          (p) => p.pseudo === player.pseudo
+        );
+        if (existingIndex !== -1) {
+          // Vérifier si le joueur a réellement changé
+          const currentPlayer = currentPlayers[existingIndex];
+          if (
+            currentPlayer.streak !== player.streak ||
+            currentPlayer.lastClickTime !== player.lastClickTime
+          ) {
+            // Mettre à jour uniquement les valeurs qui ont changé
+            currentPlayers[existingIndex] = {
+              ...currentPlayer,
+              streak: player.streak,
+              lastClickTime: player.lastClickTime,
+            };
+          }
+        } else {
+          // Nouveau joueur, l'ajouter à la première position vide
+          const firstEmptyIndex = currentPlayers.findIndex(
+            (p) => p.pseudo === ""
+          );
+          if (firstEmptyIndex !== -1) {
+            currentPlayers[firstEmptyIndex] = {
+              ...player,
+              opacity: 1,
+            };
+          }
+        }
+      });
+
+      // Gérer les joueurs qui ont disparu
+      currentPlayers.forEach((player, index) => {
+        if (player.pseudo !== "") {
+          const isStillActive = activePlayersList.some(
+            (p) => p.pseudo === player.pseudo
+          );
+          if (!isStillActive && player.opacity > 0) {
+            // Le joueur n'est plus actif, commencer le fondu
+            currentPlayers[index] = {
+              ...player,
+              opacity: Math.max(0, 1 - (now - player.lastClickTime) / 3000),
+            };
+          }
+        }
+      });
+
+      setActivePlayers(currentPlayers);
+    });
+
+    // Animation de fondu
+    const fadeInterval = setInterval(() => {
+      setActivePlayers((prevPlayers) =>
+        prevPlayers.map((player) => {
+          if (player.pseudo === "") return player;
+          const timeSinceLastClick = Date.now() - player.lastClickTime;
+          const newOpacity = Math.max(0, 1 - timeSinceLastClick / 3000);
+          return {
+            ...player,
+            opacity: newOpacity,
+          };
+        })
+      );
+    }, 50);
+
+    return () => {
+      unsubscribe();
+      clearInterval(fadeInterval);
+    };
   }, []);
 
   return (
@@ -244,6 +371,30 @@ export default function Game() {
             <View style={[styles.teamButton, styles.blueButton]}>
               <Text style={styles.buttonText}>{scores.bleu}</Text>
             </View>
+          </View>
+
+          <View style={styles.activePlayersContainer}>
+            {activePlayers.map((player, index) => (
+              <View
+                key={player.pseudo || `empty-${index}`}
+                style={[
+                  styles.activePlayerItem,
+                  { opacity: player.opacity },
+                  player.pseudo === "" && styles.emptyPlayerItem,
+                ]}
+              >
+                {player.pseudo !== "" && (
+                  <Text
+                    style={[
+                      styles.activePlayerText,
+                      { color: player.team === "red" ? "#ff4444" : "#4444ff" },
+                    ]}
+                  >
+                    {player.pseudo} {player.streak}x
+                  </Text>
+                )}
+              </View>
+            ))}
           </View>
         </View>
 
@@ -467,5 +618,32 @@ const styles = StyleSheet.create({
     textShadowColor: "rgba(0, 0, 0, 0.5)",
     textShadowOffset: { width: 0, height: 1 },
     textShadowRadius: 3,
+  },
+  activePlayersContainer: {
+    width: "100%",
+    alignItems: "center",
+    marginBottom: 20,
+  },
+  activePlayerItem: {
+    backgroundColor: "rgba(0, 0, 0, 0.5)",
+    paddingHorizontal: 15,
+    paddingVertical: 8,
+    borderRadius: 20,
+    marginBottom: 5,
+    borderWidth: 1,
+    borderColor: "rgba(255, 255, 255, 0.2)",
+    minHeight: 40,
+  },
+  activePlayerText: {
+    fontSize: 16,
+    fontWeight: "bold",
+    textShadowColor: "rgba(0, 0, 0, 0.5)",
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 3,
+  },
+  emptyPlayerItem: {
+    backgroundColor: "transparent",
+    borderColor: "transparent",
+    paddingVertical: 8,
   },
 });
