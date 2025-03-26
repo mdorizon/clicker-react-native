@@ -3,7 +3,6 @@ import {
   Text,
   StyleSheet,
   TouchableOpacity,
-  Pressable,
   Dimensions,
 } from "react-native";
 import { useEffect, useState, useCallback } from "react";
@@ -17,14 +16,23 @@ import {
   getDoc,
   updateDoc,
   increment,
-  addDoc,
 } from "firebase/firestore";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { LinearGradient } from "expo-linear-gradient";
 import { router } from "expo-router";
 import { db } from "./firebase";
+import { Ionicons } from "@expo/vector-icons";
 
 const { width } = Dimensions.get("window");
+
+interface Upgrade {
+  id: string;
+  name: string;
+  description: string;
+  basePrice: number;
+  owned: number;
+  multiplier: number;
+}
 
 export default function Game() {
   const [userTeam, setUserTeam] = useState<"rouge" | "bleu" | null>(null);
@@ -41,9 +49,53 @@ export default function Game() {
       lastClickTime: number;
     }>
   >([
-    { pseudo: "", streak: 0, team: "red", opacity: 0, lastClickTime: 0 },
-    { pseudo: "", streak: 0, team: "red", opacity: 0, lastClickTime: 0 },
-    { pseudo: "", streak: 0, team: "red", opacity: 0, lastClickTime: 0 },
+    {
+      pseudo: "",
+      streak: 0,
+      team: "red",
+      opacity: 0,
+      lastClickTime: 0,
+    },
+    {
+      pseudo: "",
+      streak: 0,
+      team: "red",
+      opacity: 0,
+      lastClickTime: 0,
+    },
+    {
+      pseudo: "",
+      streak: 0,
+      team: "red",
+      opacity: 0,
+      lastClickTime: 0,
+    },
+  ]);
+  const [upgrades, setUpgrades] = useState<Upgrade[]>([
+    {
+      id: "clickBoost",
+      name: "Boost de Clic",
+      description: "Ajoute +0.1 points par clic pour chaque niveau",
+      basePrice: 100,
+      owned: 0,
+      multiplier: 0.1,
+    },
+    {
+      id: "autoClicker",
+      name: "Auto-Clicker",
+      description: "Ajoute +0.1 points par seconde pour chaque niveau",
+      basePrice: 500,
+      owned: 0,
+      multiplier: 0.1,
+    },
+    {
+      id: "superBoost",
+      name: "Super Boost",
+      description: "Ajoute +0.5 points par clic pour chaque niveau",
+      basePrice: 750,
+      owned: 0,
+      multiplier: 0.5,
+    },
   ]);
 
   // Générer ou récupérer l'ID unique de l'appareil et le pseudo
@@ -77,57 +129,126 @@ export default function Game() {
   useEffect(() => {
     if (!deviceId) return;
 
-    const interactionsRef = collection(db, "interactions");
-    const q = query(interactionsRef, where("deviceId", "==", deviceId));
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const totalClicks = snapshot.docs.reduce((total, doc) => {
-        return total + (doc.data().clicks || 0);
-      }, 0);
-      setPersonalClicks(totalClicks);
+    const playerRef = doc(db, "playerStats", deviceId);
+    const unsubscribe = onSnapshot(playerRef, (doc) => {
+      if (doc.exists()) {
+        setPersonalClicks(doc.data().totalClicks || 0);
+      }
     });
 
     return () => unsubscribe();
   }, [deviceId]);
 
-  const handleClick = useCallback(async () => {
+  // Charger les améliorations
+  useEffect(() => {
+    if (!deviceId) return;
+
+    // Écouter les changements dans Firebase
+    const upgradesRef = doc(db, "playerUpgrades", deviceId);
+    const unsubscribe = onSnapshot(upgradesRef, (doc) => {
+      if (doc.exists()) {
+        const savedUpgrades = doc.data();
+        setUpgrades((prevUpgrades) =>
+          prevUpgrades.map((upgrade) => ({
+            ...upgrade,
+            owned: savedUpgrades[upgrade.id]?.owned || 0,
+          }))
+        );
+      }
+    });
+
+    return () => unsubscribe();
+  }, [deviceId]);
+
+  const handleClick = useCallback(
+    async (bonusPoints: number = 1, isAutoClick: boolean = false) => {
+      if (!userTeam || !deviceId || !userPseudo) return;
+
+      try {
+        const playerTeamId = `${deviceId}_${
+          userTeam === "rouge" ? "red" : "blue"
+        }`;
+        const playerRef = doc(db, "interactions", playerTeamId);
+        const playerDoc = await getDoc(playerRef);
+        const playerStatsRef = doc(db, "playerStats", deviceId);
+
+        // Calculer les points bonus des améliorations
+        const clickBoost = upgrades.find(
+          (upgrade) => upgrade.id === "clickBoost"
+        );
+        const superBoost = upgrades.find(
+          (upgrade) => upgrade.id === "superBoost"
+        );
+        const totalBonus =
+          (clickBoost?.owned || 0) * (clickBoost?.multiplier || 0) +
+          (superBoost?.owned || 0) * (superBoost?.multiplier || 0);
+
+        const totalPoints = Number((bonusPoints + totalBonus).toFixed(1));
+
+        // Mettre à jour les clics personnels
+        await setDoc(
+          playerStatsRef,
+          {
+            totalClicks: increment(totalPoints),
+            lastUpdate: Date.now(),
+          },
+          { merge: true }
+        );
+
+        if (!playerDoc.exists()) {
+          await setDoc(playerRef, {
+            team: userTeam === "rouge" ? "red" : "blue",
+            clicks: Math.round(totalPoints),
+            lastUpdate: Date.now(),
+            deviceId: deviceId,
+            pseudo: userPseudo,
+            streak: isAutoClick ? 0 : 1,
+            lastClickTime: isAutoClick ? 0 : Date.now(),
+          });
+        } else {
+          const lastClickTime = playerDoc.data().lastClickTime || 0;
+          const timeSinceLastClick = Date.now() - lastClickTime;
+
+          // Réinitialiser le streak si plus de 3 secondes se sont écoulées
+          const newStreak = isAutoClick
+            ? playerDoc.data().streak || 0
+            : timeSinceLastClick > 3000
+            ? 1
+            : (playerDoc.data().streak || 0) + 1;
+
+          await updateDoc(playerRef, {
+            clicks: increment(Math.round(totalPoints)),
+            lastUpdate: Date.now(),
+            streak: newStreak,
+            lastClickTime: isAutoClick ? lastClickTime : Date.now(),
+          });
+        }
+      } catch (error) {
+        console.error(
+          "Erreur lors de l'enregistrement de l'interaction:",
+          error
+        );
+      }
+    },
+    [userTeam, deviceId, userPseudo, upgrades]
+  );
+
+  // Ajouter l'effet de l'Auto-Clicker
+  useEffect(() => {
     if (!userTeam || !deviceId || !userPseudo) return;
 
-    try {
-      const playerTeamId = `${deviceId}_${
-        userTeam === "rouge" ? "red" : "blue"
-      }`;
-      const playerRef = doc(db, "interactions", playerTeamId);
-      const playerDoc = await getDoc(playerRef);
-
-      if (!playerDoc.exists()) {
-        await setDoc(playerRef, {
-          team: userTeam === "rouge" ? "red" : "blue",
-          clicks: 1,
-          lastUpdate: Date.now(),
-          deviceId: deviceId,
-          pseudo: userPseudo,
-          streak: 1,
-          lastClickTime: Date.now(),
-        });
-      } else {
-        const lastClickTime = playerDoc.data().lastClickTime || 0;
-        const timeSinceLastClick = Date.now() - lastClickTime;
-
-        // Réinitialiser le streak si plus de 3 secondes se sont écoulées
-        const newStreak =
-          timeSinceLastClick > 3000 ? 1 : (playerDoc.data().streak || 0) + 1;
-
-        await updateDoc(playerRef, {
-          clicks: increment(1),
-          lastUpdate: Date.now(),
-          streak: newStreak,
-          lastClickTime: Date.now(),
-        });
+    const autoClickerInterval = setInterval(() => {
+      const autoClicker = upgrades.find(
+        (upgrade) => upgrade.id === "autoClicker"
+      );
+      if (autoClicker && autoClicker.owned > 0) {
+        const pointsToAdd = autoClicker.owned * autoClicker.multiplier;
+        handleClick(pointsToAdd, true);
       }
-    } catch (error) {
-      console.error("Erreur lors de l'enregistrement de l'interaction:", error);
-    }
-  }, [userTeam, deviceId, userPseudo]);
+    }, 1000);
+
+    return () => clearInterval(autoClickerInterval);
+  }, [userTeam, deviceId, userPseudo, upgrades]);
 
   const handleReset = async () => {
     try {
@@ -235,6 +356,7 @@ export default function Game() {
               ...currentPlayer,
               streak: player.streak,
               lastClickTime: player.lastClickTime,
+              opacity: player.opacity,
             };
           }
         } else {
@@ -257,11 +379,10 @@ export default function Game() {
           const isStillActive = activePlayersList.some(
             (p) => p.pseudo === player.pseudo
           );
-          if (!isStillActive && player.opacity > 0) {
-            // Le joueur n'est plus actif, commencer le fondu
+          if (!isStillActive) {
             currentPlayers[index] = {
               ...player,
-              opacity: Math.max(0, 1 - (now - player.lastClickTime) / 3000),
+              opacity: 0,
             };
           }
         }
@@ -270,26 +391,12 @@ export default function Game() {
       setActivePlayers(currentPlayers);
     });
 
-    // Animation de fondu
-    const fadeInterval = setInterval(() => {
-      setActivePlayers((prevPlayers) =>
-        prevPlayers.map((player) => {
-          if (player.pseudo === "") return player;
-          const timeSinceLastClick = Date.now() - player.lastClickTime;
-          const newOpacity = Math.max(0, 1 - timeSinceLastClick / 3000);
-          return {
-            ...player,
-            opacity: newOpacity,
-          };
-        })
-      );
-    }, 50);
-
-    return () => {
-      unsubscribe();
-      clearInterval(fadeInterval);
-    };
+    return () => unsubscribe();
   }, []);
+
+  const calculatePrice = (upgrade: Upgrade) => {
+    return Math.round(upgrade.basePrice * Math.pow(1.1, upgrade.owned));
+  };
 
   return (
     <View style={styles.container}>
@@ -365,11 +472,11 @@ export default function Game() {
 
           <View style={styles.scoreContainer}>
             <View style={[styles.teamButton, styles.redButton]}>
-              <Text style={styles.buttonText}>{scores.rouge}</Text>
+              <Text style={styles.buttonText}>{Math.round(scores.rouge)}</Text>
             </View>
 
             <View style={[styles.teamButton, styles.blueButton]}>
-              <Text style={styles.buttonText}>{scores.bleu}</Text>
+              <Text style={styles.buttonText}>{Math.round(scores.bleu)}</Text>
             </View>
           </View>
 
@@ -398,6 +505,49 @@ export default function Game() {
           </View>
         </View>
 
+        <View style={styles.statsContainer}>
+          <View style={styles.clicksContainer}>
+            <Text style={styles.clicksText}>{personalClicks.toFixed(1)}</Text>
+            <Ionicons name="hand-left" size={20} color="white" />
+          </View>
+
+          <View style={styles.activeUpgradesContainer}>
+            {upgrades.map((upgrade) => (
+              <View
+                key={upgrade.id}
+                style={[
+                  styles.activeUpgradeItem,
+                  upgrade.owned === 0 && styles.inactiveUpgradeItem,
+                ]}
+              >
+                <Ionicons
+                  name={
+                    upgrade.id === "autoClicker"
+                      ? "time"
+                      : upgrade.id === "clickBoost"
+                      ? "flash"
+                      : "star"
+                  }
+                  size={16}
+                  color={
+                    upgrade.owned > 0 ? "white" : "rgba(255, 255, 255, 0.3)"
+                  }
+                />
+                {upgrade.owned > 0 && (
+                  <Text
+                    style={[
+                      styles.activeUpgradeText,
+                      upgrade.owned === 0 && styles.inactiveUpgradeText,
+                    ]}
+                  >
+                    x{upgrade.owned}
+                  </Text>
+                )}
+              </View>
+            ))}
+          </View>
+        </View>
+
         <View style={styles.gameControls}>
           <View style={styles.buttonWrapper}>
             <LinearGradient
@@ -415,21 +565,35 @@ export default function Game() {
                 styles.clickButton,
                 userTeam === "rouge" ? styles.redButton : styles.blueButton,
               ]}
-              onPress={handleClick}
+              onPress={() => handleClick()}
               activeOpacity={0.7}
             >
               <Text style={styles.clickButtonText}>CLIQUER</Text>
             </TouchableOpacity>
           </View>
 
-          <Text
+          <TouchableOpacity
             style={[
-              styles.personalClicksText,
-              { color: userTeam === "rouge" ? "#ff4444" : "#4444ff" },
+              styles.shopButton,
+              { borderColor: userTeam === "rouge" ? "#ff4444" : "#4444ff" },
             ]}
+            onPress={() => router.push("/shop")}
+            activeOpacity={0.7}
           >
-            Vos clics: {personalClicks}
-          </Text>
+            <Ionicons
+              name="cart"
+              size={24}
+              color={userTeam === "rouge" ? "#ff4444" : "#4444ff"}
+            />
+            <Text
+              style={[
+                styles.shopButtonText,
+                { color: userTeam === "rouge" ? "#ff4444" : "#4444ff" },
+              ]}
+            >
+              BOUTIQUE
+            </Text>
+          </TouchableOpacity>
 
           {/* Décoration du bas */}
           <View style={styles.bottomDecoration}>
@@ -645,5 +809,71 @@ const styles = StyleSheet.create({
     backgroundColor: "transparent",
     borderColor: "transparent",
     paddingVertical: 8,
+  },
+  shopButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(0, 0, 0, 0.5)",
+    padding: 10,
+    borderRadius: 20,
+    borderWidth: 2,
+    marginBottom: 20,
+  },
+  shopButtonText: {
+    fontSize: 16,
+    fontWeight: "bold",
+    marginLeft: 8,
+    textShadowColor: "rgba(0, 0, 0, 0.5)",
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 3,
+  },
+  statsContainer: {
+    alignItems: "center",
+    marginBottom: 10,
+  },
+  clicksContainer: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "rgba(0, 0, 0, 0.5)",
+    padding: 10,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: "rgba(255, 255, 255, 0.2)",
+    marginBottom: 5,
+  },
+  clicksText: {
+    color: "white",
+    fontSize: 16,
+    fontWeight: "bold",
+    marginRight: 5,
+  },
+  activeUpgradesContainer: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    justifyContent: "center",
+    gap: 6,
+    marginBottom: 5,
+  },
+  activeUpgradeItem: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "rgba(0, 0, 0, 0.5)",
+    padding: 5,
+    borderRadius: 15,
+    borderWidth: 1,
+    borderColor: "rgba(255, 255, 255, 0.2)",
+  },
+  activeUpgradeText: {
+    color: "white",
+    fontSize: 12,
+    marginLeft: 4,
+  },
+  inactiveUpgradeItem: {
+    backgroundColor: "rgba(0, 0, 0, 0.3)",
+    borderColor: "rgba(255, 255, 255, 0.1)",
+  },
+  inactiveUpgradeText: {
+    color: "rgba(255, 255, 255, 0.3)",
   },
 });
